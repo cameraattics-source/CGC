@@ -525,6 +525,11 @@
       <button class="btn btn-sage" id="buy-pushAllBtn" style="margin-top:8px;">Push All to Intake</button>
       <div id="buy-boughtList" style="margin-top:12px;"><p class="empty-state">Tap Refresh to check for unpushed items.</p></div>
     </section>
+    <section class="card">
+      <p class="section-title" style="margin-top:0;">process in process actions</p>
+      <p class="hint" style="margin-top:0;">For rows already marked "Post" or "Move to Master" in the Action column on the In Process sheet -- promotes them to Inventory in one batch. Setting which items get which action still happens on the sheet itself; this just lets you trigger the batch from here once that's done.</p>
+      <button class="btn btn-primary" id="ip-processBtn">Process In Process Actions</button>
+    </section>
   </div>
 
   <div class="sub-view" id="subview-lotalloc">
@@ -802,6 +807,12 @@
       <label class="label">Workbook Setup</label>
       <button class="btn btn-sm" id="setup-verifyBtn" style="width:100%;">🔧 Verify / Repair Sheet Columns</button>
       <p class="hint">Your sheet already has every column this app needs. This is a rare safety net for if a column ever gets accidentally deleted later -- nothing to run routinely, and safe to run any time (never touches existing data).</p>
+    </div>
+
+    <div class="field" style="margin-top:16px;">
+      <label class="label">Backup</label>
+      <button class="btn btn-sm" id="backup-nowBtn" style="width:100%;">💾 Backup Now</button>
+      <p class="hint">Makes a full, independent copy of the whole workbook (every sheet, every formula) in a "Casa Garza Backups" Drive folder. A daily automatic backup can also be turned on from the Sheet's own 💾 Backup menu (desktop, one-time setup).</p>
     </div>
 
     <div class="field" style="margin-top:16px;">
@@ -2958,6 +2969,22 @@ $("buy-pushAllBtn").addEventListener("click", async () => {
   for(const btn of buttons){ const result = await buyPushOneToIntake(url, btn.dataset.push); if(result.error) failed++; else pushed++; }
   showToast(pushed + " done" + (failed ? ", " + failed + " failed" : "")); buyLoadBoughtList();
 });
+$("ip-processBtn").addEventListener("click", async () => {
+  const url = await getWebAppUrl();
+  if(!url){ showToast("Set up the Web App URL in Settings first"); return; }
+  if(!confirm('Process every In Process row currently marked "Post" or "Move to Master"? This promotes them to Inventory.')) return;
+  const btn = $("ip-processBtn");
+  btn.disabled = true; btn.textContent = "Processing…";
+  try{
+    const res = await fetch(url, { method:"POST", headers:{"Content-Type":"text/plain"},
+      body: JSON.stringify({ action:"processInProcessActions", userName: await getUserName() }) });
+    const data = await res.json();
+    if(data.error){ showToast("Not allowed / not applied: " + data.error); }
+    else if(data.message){ showToast(data.message); }
+    else{ showToast(`Posted: ${data.posted} · Moved: ${data.moved} · Held: ${data.held} · Skipped: ${data.skipped}`); }
+  }catch(e){ showToast("Couldn't reach the Web App"); }
+  btn.disabled = false; btn.textContent = "Process In Process Actions";
+});
 async function buyLoadConfig(){
   const url = await getWebAppUrl(); if(!url) return;
   try{ const res = await fetch(url + "?action=config"); const data = await res.json(); if(data.targetMargin) buyTargetMarginDefault = data.targetMargin; }catch(e){}
@@ -3215,6 +3242,21 @@ $("setup-verifyBtn").addEventListener("click", async () => {
     });
     alert("Workbook Schema Check\n\n" + lines.join("\n"));
   }catch(e){ showToast("Couldn't reach the Web App"); }
+});
+
+$("backup-nowBtn").addEventListener("click", async () => {
+  const url = await getWebAppUrl();
+  if(!url){ showToast("Set up the Web App URL in Settings first"); return; }
+  const btn = $("backup-nowBtn");
+  btn.disabled = true; btn.textContent = "Backing up…";
+  try{
+    const res = await fetch(url, { method:"POST", headers:{"Content-Type":"text/plain"},
+      body: JSON.stringify({ action:"createBackup", userName: await getUserName() }) });
+    const data = await res.json();
+    if(data.error){ showToast(data.error); }
+    else{ showToast("Backup created: " + data.name); }
+  }catch(e){ showToast("Couldn't reach the Web App"); }
+  btn.disabled = false; btn.textContent = "💾 Backup Now";
 });
 
 // ---------------- Business Info (real, prints on every generated document) ----------------
@@ -3544,6 +3586,19 @@ async function recSearch(){
     $("rec-statusLine").textContent = filtered.length ? filtered.length + " match(es)." : "No matches.";
   }catch(e){ $("rec-statusLine").textContent = "Couldn't reach the Web App."; }
 }
+async function recSetInProcessAction(sku, action){
+  if(!sku) return;
+  const url = await getWebAppUrl();
+  if(!url){ showToast("Set up the Web App URL in Settings first"); return; }
+  try{
+    const res = await fetch(url, { method:"POST", headers:{"Content-Type":"text/plain"},
+      body: JSON.stringify({ sheet:"In Process", sku, fields:{ "Action": action }, changedBy: await getChangedByLabel(), source: "Records Tab Action Selector", logMode: "perField" }) });
+    const data = await res.json();
+    if(data.error){ showToast("Not saved: " + data.error); return; }
+    showToast(action ? sku + " set to " + action : sku + " action cleared");
+  }catch(e){ showToast("Couldn't reach the Web App"); }
+}
+
 function recRenderList(rows){
   const wrap = $("rec-list");
   if(!rows.length){ wrap.innerHTML = '<p class="empty-state">Nothing to show.</p>'; return; }
@@ -3555,16 +3610,31 @@ function recRenderList(rows){
     const meta = isOrder
       ? [r.__sheet, r["Order ID"], r["Customer Name"], r["Due Date"] ? "due " + String(r["Due Date"]).slice(0,10) : "", r["Status"]].filter(Boolean).join(" · ")
       : [r.__sheet, r["SKU"], r["Manufacturer/Maker"] || r["Brand"], r["Model/Pattern"] || r["Model"], r["Seller Name"], r["Status"] || r["Buy Decision"]].filter(Boolean).join(" · ");
-    // 💰 Sale Info only makes sense on Inventory rows (In Process items
-    // haven't been promoted/listed yet) -- this is the mobile-reachable
-    // equivalent of the desktop-only Mark Sold / Add Shipping Info /
-    // Generate Sale Receipt menu actions, which use SpreadsheetApp
-    // dialogs that never worked from the Web App at all.
-    const saleInfoBtn = r.__sheet === "Inventory" ? '<button class="btn btn-sm btn-sage" data-rec-saleinfo="1">💰 Sale Info</button>' : '';
+    // 💰 Sale Info now works on In Process rows too -- an item can
+    // legitimately be marked sold (a pre-sold special order, a sale made
+    // before formal promotion) before it's been through Post/Move to
+    // Master. This is the mobile-reachable equivalent of the desktop-only
+    // Mark Sold / Add Shipping Info / Generate Sale Receipt menu actions,
+    // which use SpreadsheetApp dialogs that never worked from the Web
+    // App at all.
+    const saleInfoBtn = (r.__sheet === "Inventory" || r.__sheet === "In Process") ? '<button class="btn btn-sm btn-sage" data-rec-saleinfo="1">💰 Sale Info</button>' : '';
     const skuForHistory = r["SKU"] || r["Order ID"] || "";
     const historyBtn = skuForHistory ? '<button class="btn btn-sm" data-rec-history="1">📜 History</button>' : '';
     div.innerHTML = '<div class="top"><span class="nm">' + name + '</span></div><div class="meta">' + meta + '</div>' +
       '<div class="actions"><button class="btn btn-sm" data-rec-open="1">Open →</button>' + saleInfoBtn + historyBtn + '</div>';
+    // Action selector -- the real fix for In Process rows specifically:
+    // previously the only way to set Hold/Post/Move to Master was the
+    // dropdown column on the actual In Process sheet (desktop only).
+    // Posts straight through the generic upsertBySku endpoint, same one
+    // every other Records edit already uses.
+    if(r.__sheet === "In Process" && r["SKU"]){
+      const actionSel = document.createElement("select");
+      actionSel.style.marginTop = "8px";
+      actionSel.innerHTML = '<option value="">Action: not set</option><option value="Hold">Hold</option><option value="Post">Post</option><option value="Move to Master">Move to Master</option>';
+      actionSel.value = r["Action"] || "";
+      actionSel.addEventListener("change", () => recSetInProcessAction(r["SKU"], actionSel.value));
+      div.appendChild(actionSel);
+    }
     div.querySelector('[data-rec-open]').addEventListener("click", () => recOpenRow(r));
     const saleInfoEl = div.querySelector('[data-rec-saleinfo]');
     if(saleInfoEl) saleInfoEl.addEventListener("click", () => recOpenSaleInfoModal(r["SKU"]));
