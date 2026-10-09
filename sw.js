@@ -14,7 +14,7 @@
 // CACHE_VERSION: bump this string any time app.html/CSS/JS meaningfully
 // changes, so returning visitors get the new version instead of a stale
 // cached one. Easiest approach: change the date each time you deploy.
-const CACHE_VERSION = 'casa-garza-v16';
+const CACHE_VERSION = 'casa-garza-v16_1';
 
 const SHELL_ASSETS = [
   '/',
